@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+from pathlib import Path
+import json
 import re
 import sqlite3
 
@@ -162,6 +163,86 @@ def main() -> None:
     corr = completed_join[["order_amount", "discount_pct", "quantity", "delivery_minutes"]].corr()
     assert round(corr.loc["order_amount", "discount_pct"], 3) == -0.095
     assert round(corr.loc["order_amount", "quantity"], 3) == 0.087
+
+    segment_file = Path("outputs/customer_segments.csv")
+    model_file = Path("outputs/lapse_model.joblib")
+    retention_file = Path("outputs/retention_list.csv")
+    assert segment_file.exists() and model_file.exists() and retention_file.exists()
+    segments = pd.read_csv(segment_file)
+    assert list(segments.columns) == [
+        "customer_id", "recency", "frequency", "monetary",
+        "segment_id", "segment_name", "is_premium",
+    ]
+    assert len(segments) == 1175
+    assert int(segments["is_premium"].sum()) == 138
+    segment_means = segments.groupby("segment_id")["monetary"].mean()
+    premium_ids = segments.loc[segments["is_premium"], "segment_id"].unique()
+    assert len(premium_ids) == 1
+    assert int(premium_ids[0]) == int(segment_means.idxmax())
+    retention = pd.read_csv(retention_file)
+    assert list(retention.columns) == ["customer_id", "lapse_probability", "actually_lapsed"]
+    assert len(retention) == 10
+    assert int(retention["actually_lapsed"].sum()) == 2
+
+    triage_columns = [
+        "ticket_id", "customer_id", "status", "category", "segment_name",
+        "priority", "route", "tokens_used",
+    ]
+    triage = pd.read_csv("outputs/triage_results.csv", keep_default_na=False)
+    budget_triage = pd.read_csv("outputs/triage_budget_demo.csv", keep_default_na=False)
+    raw_tickets = pd.read_csv("data/raw/tickets.csv", keep_default_na=False)
+    assert list(triage.columns) == triage_columns
+    assert list(budget_triage.columns) == triage_columns
+    assert len(triage) == 164
+    assert len(budget_triage) == 164
+    assert triage["ticket_id"].tolist() == raw_tickets["ticket_id"].tolist()
+    assert triage["status"].value_counts().to_dict() == {
+        "classified_json": 135, "classified_keyword": 12,
+        "flagged_invalid_output": 9, "skipped_empty": 4, "flagged_long": 4,
+    }
+    budget_exhausted = budget_triage["status"].eq("budget_exhausted")
+    assert budget_exhausted.sum() > 0
+    assert budget_triage.loc[budget_exhausted, "route"].eq("human_review").all()
+    assert budget_triage.loc[budget_exhausted, "priority"].eq("NORMAL").all()
+    human_statuses = {"skipped_empty", "flagged_long", "flagged_invalid_output", "budget_exhausted"}
+    assert triage.loc[triage["status"].isin(human_statuses), "route"].eq("human_review").all()
+    assert triage.loc[triage["status"].isin(human_statuses), "priority"].eq("NORMAL").all()
+    assert triage.loc[triage["category"].eq("fraud"), "route"].eq("security_team").all()
+    assert triage.loc[triage["category"].eq("fraud"), "priority"].eq("HIGH").all()
+    premium_customers = set(segments.loc[segments["is_premium"], "customer_id"])
+    eligible_routes = triage.loc[triage["status"].isin({"classified_json", "classified_keyword"})]
+    for row in eligible_routes.itertuples(index=False):
+        if row.category == "fraud":
+            assert (row.route, row.priority) == ("security_team", "HIGH")
+        elif row.customer_id in premium_customers:
+            assert (row.route, row.priority) == ("premium_desk", "HIGH")
+        else:
+            assert (row.route, row.priority) == ("support_queue", "NORMAL")
+
+    agent_runs = [json.loads(line) for line in Path("outputs/agent_runs.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(agent_runs) == 7
+    assert [run["scenario_id"] for run in agent_runs] == [f"S{i}" for i in range(1, 8)]
+    assert [run["status"] for run in agent_runs] == [
+        "REFUND", "REFUND", "ESCALATE", "DENIED", "DENIED", "NOT_FOUND", "FALLBACK_MAX_ITERATIONS",
+    ]
+    run_fields = {"scenario_id", "status", "final_answer", "llm_calls", "tokens_used", "steps"}
+    step_fields = {"tool_name", "arguments", "observation"}
+    assert all(run_fields.issubset(run) for run in agent_runs)
+    assert all(step_fields.issubset(step) for run in agent_runs for step in run["steps"])
+    assert agent_runs[0]["llm_calls"] == 5 and agent_runs[-1]["llm_calls"] == 6
+    assert agent_runs[-1]["tokens_used"] < 6000
+    checkpoint = json.loads(Path("state/demo_s1_resume.json").read_text(encoding="utf-8"))
+    assert checkpoint["status"] == "REFUND"
+    assert checkpoint["tools_executed"] == [
+        "get_order", "search_policy", "calculate_refund", "issue_refund",
+    ]
+    assert json.loads(Path("state/demo_s1_token_limit.json").read_text(encoding="utf-8"))["status"] == "FALLBACK_TOKEN_LIMIT"
+    assert json.loads(Path("state/demo_s1_timeout.json").read_text(encoding="utf-8"))["status"] == "FALLBACK_TIMEOUT"
+    ledger = [json.loads(line) for line in Path("outputs/refund_ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [entry["tool_name"] for entry in ledger] == [
+        "issue_refund", "issue_refund", "escalate_to_human", "issue_refund",
+    ]
+    assert all({"timestamp", "tool_name", "order_id", "refund_inr"}.issubset(entry) for entry in ledger)
     print("ALL CHECKPOINTS PASSED")
 
 

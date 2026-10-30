@@ -1,0 +1,26 @@
+{
+  "run_id": "demo_s1_timeout",
+  "scenario_id": "S1",
+  "user_message": "My order ORD-100048 reached me very late. I would like a refund.",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an AGENT for refund support. Use the supplied tools to look up the order, retrieve the refund policy, calculate the permitted refund, and issue or escalate it. Only completed orders qualify; over 45 minutes is a full refund, otherwise zero. Refunds above INR 1000 must be escalated to a human."
+    },
+    {
+      "role": "user",
+      "content": "My order ORD-100048 reached me very late. I would like a refund."
+    }
+  ],
+  "tokens_used": 0,
+  "llm_calls": 0,
+  "step_number": 0,
+  "tools_executed": [],
+  "steps": [],
+  "max_iterations": 6,
+  "token_limit": 6000,
+  "time_limit_seconds": 0,
+  "started_monotonic": 629066.0245713,
+  "status": "FALLBACK_TIMEOUT",
+  "final_answer": "FALLBACK_TIMEOUT: Time limit reached before the next model call. Human handoff required; completed tools: none."
+}
